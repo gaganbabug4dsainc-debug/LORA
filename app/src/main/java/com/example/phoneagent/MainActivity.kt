@@ -41,8 +41,8 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         val model = EditText(this).apply {
-            hint = "Model"
-            setText(prefs.getString("model", "gemini-2.5-flash"))
+            hint = "Model (kai ho to comma se: model1,model2)"
+            setText(prefs.getString("model", "gemini-3.8-flash"))
         }
         val goal = EditText(this).apply {
             hint = "Goal, jaise: Clock app kholo aur 7 baje ka alarm lagao"
