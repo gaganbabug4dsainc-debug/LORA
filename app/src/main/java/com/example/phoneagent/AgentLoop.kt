@@ -92,7 +92,11 @@ Rules:
                 history.takeLast(8).joinToString("\n").ifBlank { "(none)" } +
                 "\n\nCURRENT SCREEN:\n$screen"
 
-            val reply = LlmClient.ask(apiKey, model, SYSTEM, prompt)
+            val reply = LlmClient.ask(
+                apiKey, model, SYSTEM, prompt,
+                isCancelled = { cancel },
+                onRetry = { AgentLog.add(it) }
+            )
             val json = try {
                 JSONObject(reply.substring(reply.indexOf('{'), reply.lastIndexOf('}') + 1))
             } catch (e: Exception) {
