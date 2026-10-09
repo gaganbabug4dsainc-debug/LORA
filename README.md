@@ -1,55 +1,85 @@
-# Phone Agent (v0.3)
+# LoRA (v0.6)
 
-Android app jo Accessibility Service se dusre apps ki screen padhta hai aur tap/type/scroll karta hai.
-Dimaag: cloud LLM providers (Gemini / OpenRouter / Groq / custom), auto-switch ke saath.
-Local model, voice, offline chat, file/image upload: Phase 2.
+Android app: Accessibility Service se phone chalane wala **Agent**, phone me rehne wali **offline Chat**, floating **mini window + voice assistant**, aur model-independent **resumable tasks**.
+(applicationId purana hi hai, isliye purane version par seedha update hota hai; keys/settings bachti hain.)
 
-## GitHub Actions se APK banao (PC ki zarurat nahi)
-1. GitHub par repo banao aur is zip ke saare files upload karo (`.github` folder samet). Branch `main`.
-2. **Actions** tab -> "Build APK" chalne do (ya "Run workflow").
-3. Artifacts me `phone-agent-debug-apk` download karo, zip kholo, `app-debug.apk` install karo.
+## v0.6: naya design + phone ke andar ka model
+- **Naya Home screen**: status card (progress bar, Pause/Resume/Skip/Next/Stop, Retry/Restart/Steps/Checkpoint), goal composer + templates, setup checklist, shortcuts (Chat, Skill Studio, History, Doosre AI), haal ke tasks + stats, live log.
+- **Settings alag screen** (sections tap karke kholo): Agent & steps, Privacy, Voice, Models & Providers, Offline models, Backup/Restore, Floating icon, Log.
+- **Phone ke andar ka model (MediaPipe)**: Settings -> Offline models -> `.task` / `.litertlm` file chuno (Gemma/Qwen, chhota). Internet/quota nahi lagta; Model Manager me 🟢 offline dikhta hai aur Auto me sabse pehle use hota hai. (Ollama server wala tareeka bhi hai.)
+- **Backup / Restore** (encrypted, optional passphrase): settings + skills (+ chats). Keys kabhi nahi jaati.
+- **Chat text ab encrypted** (Android Keystore) -- purane plain messages bhi padhe jaate hain.
+- Floating panel me **⟲ Restart** (confirm ke saath).
+- Build ke liye `android.useAndroidX=true` (gradle.properties) zaruri hai.
+- Limits: device model dheema ho sakta hai (Snapdragon 695), Stop par jawab poora hone tak ruka rehta hai, chat template file ke naam (gemma/qwen) se pehchana jata hai; nayi cheezein pehli baar test hoti hain -- build/crash ho to log bhejo.
 
-## Phone par setup
-1. APK install karo. Android 13+: Settings -> Apps -> Phone Agent -> ⋮ -> **Allow restricted settings**.
-2. App kholo -> "Accessibility settings kholo" -> **Phone Agent** on karo.
-3. Providers me API key jodo (ek se zyada jodoge to limit aane par agla apne aap chalega).
-4. Chat box me goal likho -> **Bhejo / Start**.
+## v0.4 me kya naya hai
+**Floating**
+- Floating icon: drag = kahin bhi le jao | tap = mini panel | double tap = Agent Chat. Rang: 🟢 Running, 🟡 Waiting, 🔵 Paused, 🔴 Error, ⚪ Idle.
+- Stop: laal ■ floating button (agent chalte waqt hamesha dikhta hai, drag hota hai) + panel me ■ STOP. Safe stop: naye actions band -> state + checkpoint save -> Resume ho sakta hai.
+- Mini window: header se drag, ◢ se resize, ▾ collapse, ⤢ maximize, — icon me wapas, ✕ close. Jagah/size yaad rehte hain.
+- Controls: ⏸ Pause, ▶ Resume, Skip, Next (ek step chalao phir ruko), Retry, +Step, 📋 Steps (editor), ⚑ Checkpoint, Limit (10/20/50/100/200/∞), ✋ Manual.
 
-## v0.3 me kya naya hai
-- **15-step limit hata diya.** Settings -> Agent Step Limit: 10/20/50/100/200/Custom/♾ Unlimited (default 100).
-  Limit poori hone par agent poochta hai: "+50 steps" ya Stop. Unlimited me bhi loop-protection hai.
-- **Loop protection:** wahi steps baar-baar dohrane par "Continue / Stop / Change Plan" poochta hai.
-- **Floating controls:**
-  - Draggable **AI** icon (rang = status: grey idle, green running, peela waiting, neela paused, laal error;
-    running me icon par step number). Tap = mini window, double tap = chat input ke saath.
-  - Alag draggable laal **■ Stop** button, jab tak agent chal raha ho hamesha screen par.
-  - Asli floating **mini window**: header se move, neeche-daayein ◢ se resize, ▁ se collapse, ✕ se band.
-    Position/size yaad rehte hain. Panel neeche ke app ka focus tabhi leta hai jab tum chat box me type karo.
-  - Controls: Pause/Resume, Skip, Next, Stop, Checkpoint, Retry, + Step, Model, Chat.
-- **Agent Chat:** panel/dashboard se likho. Chhote commands (stop, pause, continue, skip, next, retry, status,
-  checkpoint, change goal; Hinglish bhi) local chalte hain, model ke bina. Baaki message agent ko instruction
-  ban jata hai. Chal nahi raha ho to naya goal.
-- **Model-independent task state:** goal, step, history, notes, queue, checkpoints, errors disk par
-  (`task.json`) har step ke baad save hote hain. Model badalne par task reset nahi hota.
-- **Model Manager:** Models section me list, Online/Offline badge, "Use" se manual switch
-  (task chal raha ho to confirm poochta hai). Auto mode me pehla available chalta hai, fail hone par agla.
-- **Crash/restart recovery:** app kholne par adhoora task mile to Continue / Restart / Delete.
-  Stop karne par bhi state save hota hai; Resume se wahin se aage.
-- **Checkpoints:** manual, auto (har N steps), risky action se pehle, pause/stop/model switch par.
-- **Steps queue:** user steps add/edit/delete/move/duplicate/disable/checkpoint-marker, agent chalte waqt bhi.
-- **Data Processing:** Local Only / Ask Before Online (default) / Allow Online.
-  Ask mode me har naye task par ek baar poochta hai ki screen text online model ko bheja jaye ya nahi.
+**Agent Chat + Voice**
+- Panel ka 🤖 Agent mode = chalte task se baat. "pause", "continue", "skip this step", "next", "go back", "retry", "restart", "stop", "status", "what are you doing", "change the goal", "continue from last checkpoint" (Hindi/Hinglish bhi: ruko, chalo, chhod do, agla, piche jao, kya kar rahe ho) local chalte hain, LLM ke bina.
+- Sawal poochho to jawab task ki poori state dekhkar aata hai (goal, step, history, pending steps, checkpoint, model). Normal Chat se bhi agent control hota hai ("pause my running agent") aur Chat me task bar dikhta hai.
+- 🎤 se bolo; 🎙 Live = bolo -> jawab suno -> phir sunna. Speech: Silent / sirf zaruri / har step; speed, volume, voice, bhasha (Hindi/English).
 
-## Safety
-- Send/delete/pay jaise actions se pehle Allow/Deny dialog. Password fields ka text model ko nahi jata.
-- Stop: naye actions band, state save, checkpoint, baad me Resume.
-- Bank/payment/OTP apps par mat chalao.
+**Steps**
+- Koi hard 15-step limit nahi. Default **Unlimited**; ya 10/20/50/100/200/custom. Limit par poochta hai "aur chalaun?".
+- Loop protection: same action 5 baar, 8 baar wait, ya A-B-A-B chakkar -> "Continue / Plan badlo / Stop".
+- User ke steps: aage ke (pending) steps jodo (agla ya aakhir me), edit, delete, upar/neeche, duplicate, disable, checkpoint banao. Pura ho chuka step badla nahi jata.
+- Auto checkpoint: har N step, risky action se pehle, app badalne se pehle, model badalne se pehle, aur safe stop par.
 
-## Abhi nahi hai (Phase 2)
-Voice input/output (STT/TTS), local on-device model, offline chat + file/image upload, Room database,
-encrypted backup, Skills/Workflows.
+**State, model switch, recovery**
+- Poora state (goal, steps, pending, checkpoints, files, instructions, errors) phone ke SQLite me, kisi model me nahi. Har action ke baad auto-save.
+- Model badlo (chat/panel/app) -> "Task state safe hai, Step N se continue" confirmation -> naya model wahin se chalta hai, Step 1 se nahi.
+- App crash/band ho to khulne par: "Adhura task mila: Continue / Restart / Delete".
+- Task poora hone par agent band nahi hota: "Task completed. Ab kya karun?" -> Continue / Run again / Skill / Review / Close. Skills app me save rehti hain aur dobara chal sakti hain.
 
-## v0.4 (upgrade)
-- Floating panel: mic, back, chat, app; voice mode chip. Normal Chat + Aur settings screens.
-- Local (offline) model via MediaPipe, voice (STT/TTS), skills, encrypted storage, backup/restore.
-- NOTE: compile/test sirf GitHub Actions + phone par hoga; pehle build error check karo.
+**Offline + data local**
+- Data Processing: 🟢 Sirf Local | ❓ Online se pehle poochho (default) | 🌐 Online allowed. Local model hamesha pehle; online sirf fallback ya permission ke baad.
+- Header me 🟢 Local / Offline ya 🌐 Online dikhta hai.
+- Chat history, images, files, tasks, skills phone me. API keys Android Keystore se encrypted.
+- Attach: image, camera photo (Android 10+; photo gallery ke `Pictures/LoRA` me bhi rehti hai), TXT/code, **DOCX/XLSX/PPTX** (text phone par hi nikalta hai), **PDF** (pehle 4 page image ban kar vision model ko jate hain; text extract nahi hota).
+- "Use this PDF for the current task" jaisa likho to file/image chalte task ke context me jud jati hai.
+
+**Model Manager** (⚙ chip ya app me): har model par Local/Online, Text, Vision, Context size, Available/limit, current. Vision/context sirf provider ki list ya naam se pata chalta hai; "—" ka matlab pata nahi/nahi hai.
+
+## v0.5: Skill Studio, Agent History, doosre AI apps
+**🧩 Skill Studio** (app, floating window ka 🧩 chip, ya History se)
+- Skill banao: khali, **AI se** (kaam likho + platform), **Task → Skill** (purane task ke safal steps chuno), ya **📥 Paste** (clipboard se import).
+- Edit + **Update** (version +1) ya **Naya banao**; **🤖 AI se saaf karo** (steps general, {placeholder} wali values); **▶ Test run**; **Copy** (export text, doosre phone par Paste se import).
+- **Merge**: 2+ skills chuno -> Simple (duplicate hata kar jodo) ya AI se merge -> editor me check karke save.
+- Duplicate, delete, search (naam/platform). Platform tag (ChatGPT, Gemini, WhatsApp...). `{sawal}` jaisi values run se pehle poochhi jati hain.
+- Task poora hone par floating window ka **Skill** chip seedha skill bana deta hai (platform khud pehchanta hai).
+
+**🕘 Agent History** (app ya floating 🕘)
+- Saare tasks: kholo, **steps edit / copy / delete**, goal aur instructions edit, **Copy all** (poora task text), **Duplicate**, **Resume**, aage ke steps ka editor, task hamesha ke liye hatao.
+- **🧩 Skill banao** ya **↻ Skill update** (kisi maujooda skill ke steps is task ke safal steps se badlo).
+
+**🤖 Doosre AI app (ChatGPT, Gemini, Claude, Copilot, Perplexity, DeepSeek) se chat**
+- App ke "Doosre AI app se poochho" ya Skill Studio ke 🤖 se: app chuno + sawal likho -> agent app kholta hai, naya chat, sawal type, jawab poora likhne tak wait, phir screen se jawab padhkar batata hai.
+- Task poora hone par **Copy** chip jawab copy karta hai; History me bhi poora jawab rehta hai.
+- **📦 Starter skills**: installed AI apps ke liye "Ask <app>" skills ek tap me.
+- Dhyan: sawal us app ke server ko jata hai (LoRA ki Data Processing setting ke bahar). Un apps ke automation/terms khud check karo.
+
+**Limits (v0.5)**: AI wale skill tools ke liye ek chalta model chahiye (local ya online-permission ke baad). ChatGPT/Gemini ke steps/hints generic hain, in apps par test nahi hua; app ka UI badle ya wo screen text accessibility ko na de to agent atak sakta hai. Aise me ek baar asli run karke Task -> Skill / Skill update karo. Skills phones ke beech sirf Copy/Paste se jati hain (file backup abhi nahi).
+
+## GitHub Actions se APK
+1. Naya repo -> is folder ke andar ki saari files (`.github` samet) upload.
+2. Actions -> "Build APK". Artifact `lora-debug-apk` -> `app-debug.apk` install.
+3. Android 13+: App info -> ⋮ -> "Allow restricted settings", phir Accessibility me LoRA on.
+
+## Offline model kaise (app me AI model bundled nahi hai)
+Termux me Ollama/llama.cpp server chalao -> app -> "Local / offline model" -> `http://127.0.0.1:11434/v1` + model naam. (`http://` sirf localhost/127.0.0.1/10.0.2.2; dusre server ke liye `https://`.) Local provider ko list me upar rakho.
+
+## Abhi nahi hai / limits
+- Alag voice model (STT/TTS model) config nahi: sunna/bolna phone ka apna engine karta hai.
+- Backup export/import (encrypted) abhi nahi.
+- Chat/task database encrypted nahi (sirf keys encrypted); Room ki jagah SQLite.
+- "Previous step" aur Restart ka button nahi; Restart/"go back" command se.
+- Device reboot ke baad task apne aap resume nahi hota; app kholne par Continue ka option aata hai.
+- Screen-sharing ke saath alag se test nahi hua; overlay windows share ke upar bhi dikhni chahiye.
+- Voice input Google voice dialog se hota hai (floating window me ek second ke liye helper screen aati hai).
+- Is build me acceptance tests nahi chale; debug APK hai.

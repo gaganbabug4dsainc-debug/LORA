@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "PhoneAgent"
+rootProject.name = "LoRA"
 include(":app")
