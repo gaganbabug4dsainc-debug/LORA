@@ -2,7 +2,7 @@ package com.example.phoneagent
 
 import java.util.concurrent.CopyOnWriteArrayList
 
-/** Agent ka live log. Kai jagah (app screen, floating panel) ek saath sun sakti hain. */
+/** Agent ka live log + chat. Kai jagah (app screen, floating panel) ek saath sun sakti hain. */
 object AgentLog {
     val lines = CopyOnWriteArrayList<String>()
     private val listeners = CopyOnWriteArrayList<(String) -> Unit>()
@@ -22,9 +22,9 @@ object AgentLog {
     }
 }
 
-enum class Status { IDLE, RUNNING, WAITING, ERROR }
+enum class Status { IDLE, RUNNING, WAITING, PAUSED, ERROR }
 
-/** Floating icon ka rang aur panel ka status isi se aata hai. */
+/** UI ke liye live status: floating icon ka rang, panel ki header, dashboard. */
 object AgentState {
     @Volatile
     var status: Status = Status.IDLE
@@ -32,13 +32,62 @@ object AgentState {
     @Volatile
     var detail: String = "Ready"
 
+    @Volatile
+    var step: Int = 0
+
+    /** 0 = unlimited */
+    @Volatile
+    var limit: Int = 0
+
+    @Volatile
+    var model: String = ""
+
+    @Volatile
+    var online: Boolean = true
+
+    @Volatile
+    var goal: String = ""
+
+    @Volatile
+    var checkpoint: String = ""
+
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
+    private fun fire() {
+        for (l in listeners) l()
+    }
 
     fun update(s: Status, d: String) {
         status = s
         detail = d
-        for (l in listeners) l()
+        fire()
     }
+
+    fun meta(step: Int, limit: Int, goal: String, checkpoint: String) {
+        this.step = step
+        this.limit = limit
+        this.goal = goal
+        this.checkpoint = checkpoint
+        fire()
+    }
+
+    fun setModel(label: String, online: Boolean) {
+        model = label
+        this.online = online
+        fire()
+    }
+
+    fun stepText(): String = "Step $step / ${if (limit == 0) "∞" else limit.toString()}"
+
+    fun statusLabel(): String = when (status) {
+        Status.IDLE -> "Idle"
+        Status.RUNNING -> "Running"
+        Status.WAITING -> "Waiting"
+        Status.PAUSED -> "Paused"
+        Status.ERROR -> "Error"
+    }
+
+    fun modeLabel(): String = if (online) "🌐 Online" else "🟢 Local / Offline"
 
     fun addListener(l: () -> Unit) {
         listeners.add(l)
