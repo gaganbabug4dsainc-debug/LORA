@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="service_description">Phone Agent aapke goal ke hisaab se screen padhta hai aur tap/type/scroll karta hai. Sirf tab chalta hai jab aap agent start karte ho.</string>
+    <string name="app_name">LoRA</string>
+    <string name="chat_label">LoRA Chat</string>
+    <string name="service_description">LoRA aapke goal ke hisaab se screen padhta hai aur tap/type/scroll karta hai. Sirf tab chalta hai jab aap agent start karte ho.</string>
 </resources>
