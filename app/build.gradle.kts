@@ -11,8 +11,9 @@ android {
         applicationId = "com.example.phoneagent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 4
+        versionName = "0.4"
+        ndk { abiFilters.add("arm64-v8a") }
     }
 
     compileOptions {
@@ -22,4 +23,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    implementation("com.google.mediapipe:tasks-genai:0.10.27")
 }
