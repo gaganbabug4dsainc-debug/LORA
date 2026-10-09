@@ -8,49 +8,22 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: 17
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.7"
-
-      - name: Check project files
-        run: |
-          echo "Current directory:"
-          pwd
-
-          echo "Root files:"
-          ls -la
-
-          echo "App directory:"
-          ls -la app
-
-          echo "SRC directory:"
-          ls -la app/src
-
-          echo "MAIN directory:"
-          ls -la app/src/main
-
-          echo "Checking AndroidManifest.xml:"
-          test -f app/src/main/AndroidManifest.xml
-
-          echo "AndroidManifest.xml FOUND successfully!"
+          gradle-version: 8.7
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: phone-agent-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
