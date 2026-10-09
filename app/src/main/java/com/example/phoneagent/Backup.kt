@@ -1,106 +1,156 @@
 package com.example.phoneagent
 
 import android.content.Context
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
- * Export / import. Isme API keys, local model files, passwords KABHI nahi jaate.
- * Jaata hai: non-sensitive settings, skills (task definitions) aur (agar chaho) chat history.
- * Passphrase doge to poori file AES-256-GCM se encrypt hoti hai.
+ * Backup export/import (JSON). Settings + Skills (+ chahe to chat text). API keys kabhi nahi jaati.
+ * Passphrase do to poori file AES-GCM se encrypt hoti hai (PBKDF2). Images/files backup me nahi.
  */
 object Backup {
-    private val INTS = listOf("step_limit", "auto_cp", "local_ctx")
-    private val STRS = listOf("data_mode", "voice_mode", "tts_lang", "tts_voice", "stt_lang")
-    private val BOOLS = listOf("step_mode", "bubble")
-    private val FLOATS = listOf("tts_rate", "tts_vol")
+    private val SETTING_KEYS = listOf(
+        "bubble", "max_steps", "unlimited", "manual_step", "tts", "voice_lang", "panel_mode",
+        "data_mode", "speak_mode", "tts_rate", "tts_volume", "tts_voice", "auto_checkpoint", "device_ctx"
+    )
+    private const val MAGIC = "lora-backup-enc1:"
 
-    fun build(c: Context, includeChats: Boolean, pass: String?): String {
-        val p = Config.prefs(c)
+    fun build(ctx: Context, includeChats: Boolean, pass: String?): String {
+        val p = Config.prefs(ctx)
         val settings = JSONObject()
-        for (k in INTS) if (p.contains(k)) settings.put(k, p.getInt(k, 0))
-        for (k in STRS) if (p.contains(k)) settings.put(k, p.getString(k, ""))
-        for (k in BOOLS) if (p.contains(k)) settings.put(k, p.getBoolean(k, false))
-        for (k in FLOATS) if (p.contains(k)) settings.put(k, p.getFloat(k, 1f).toDouble())
-
+        for ((k, v) in p.all) {
+            if (k in SETTING_KEYS && v != null) settings.put(k, v)
+        }
         val skills = JSONArray()
-        for (s in SkillStore.load(c)) {
+        for (s in TaskStore.skills(ctx)) {
             skills.put(
-                JSONObject().put("name", s.name).put("goal", s.goal).put("steps", JSONArray(s.steps))
+                JSONObject().put("name", s.name).put("goal", s.goal).put("steps", s.steps)
+                    .put("platform", s.platform).put("notes", s.notes)
             )
         }
-
-        val root = JSONObject().put("v", 1).put("app", "phone-agent")
-            .put("settings", settings).put("skills", skills)
-
+        val root = JSONObject().put("v", 1).put("app", "lora").put("settings", settings).put("skills", skills)
         if (includeChats) {
-            val db = ChatDb.get(c)
             val chats = JSONArray()
-            for (cv in db.convs()) {
+            for (c in ChatStore.convs(ctx)) {
                 val msgs = JSONArray()
-                for (m in db.messages(cv.id, 5000)) {
-                    msgs.put(JSONObject().put("role", m.role).put("text", m.text))
+                for (m in ChatStore.messages(ctx, c.id, 5000)) {
+                    if (m.role == "error") continue
+                    msgs.put(JSONObject().put("role", m.role).put("text", m.text).put("model", m.model))
                 }
-                chats.put(JSONObject().put("title", cv.title).put("messages", msgs))
+                chats.put(JSONObject().put("title", c.title).put("msgs", msgs))
             }
             root.put("chats", chats)
         }
         val plain = root.toString()
-        return if (pass.isNullOrEmpty()) plain else Secure.encryptWithPass(plain, pass)
+        return if (pass.isNullOrEmpty()) plain else MAGIC + encrypt(plain, pass)
     }
 
-    /** Success par summary text, galat passphrase/file par exception. */
-    fun restore(c: Context, data: String, pass: String?): String {
-        var json = data
-        if (Secure.isPassEncrypted(json)) {
-            if (pass.isNullOrEmpty()) throw IllegalArgumentException("Ye backup encrypted hai: passphrase chahiye")
-            json = Secure.decryptWithPass(json, pass)
-                ?: throw IllegalArgumentException("Passphrase galat hai ya file kharab hai")
+    fun isEncrypted(data: String) = data.trimStart().startsWith(MAGIC)
+
+    /** Success par summary; galat passphrase/file par exception. */
+    fun restore(ctx: Context, data: String, pass: String?): String {
+        var json = data.trim()
+        if (json.startsWith(MAGIC)) {
+            if (pass.isNullOrEmpty()) throw IllegalArgumentException("Ye backup passphrase se locked hai")
+            json = try {
+                decrypt(json.removePrefix(MAGIC), pass)
+            } catch (e: Exception) {
+                throw IllegalArgumentException("Passphrase galat hai ya file kharab hai")
+            }
         }
         val root = JSONObject(json)
-        if (root.optString("app") != "phone-agent") throw IllegalArgumentException("Ye Phone Agent ka backup nahi hai")
+        if (root.optString("app") != "lora") throw IllegalArgumentException("Ye LoRA ka backup nahi lagta")
 
-        val e = Config.prefs(c).edit()
+        var nSet = 0
+        val e = Config.prefs(ctx).edit()
         val st = root.optJSONObject("settings")
-        var nSettings = 0
         if (st != null) {
-            for (k in INTS) if (st.has(k)) { e.putInt(k, st.optInt(k)); nSettings++ }
-            for (k in STRS) if (st.has(k)) { e.putString(k, st.optString(k)); nSettings++ }
-            for (k in BOOLS) if (st.has(k)) { e.putBoolean(k, st.optBoolean(k)); nSettings++ }
-            for (k in FLOATS) if (st.has(k)) { e.putFloat(k, st.optDouble(k, 1.0).toFloat()); nSettings++ }
+            for (k in SETTING_KEYS) {
+                if (!st.has(k)) continue
+                val v = st.get(k)
+                if (k == "tts_rate" || k == "tts_volume") {
+                    if (v is Number) e.putFloat(k, v.toFloat()) else continue
+                    nSet++
+                    continue
+                }
+                when (v) {
+                    is Boolean -> e.putBoolean(k, v)
+                    is Int -> e.putInt(k, v)
+                    is Long -> e.putInt(k, v.toInt())
+                    is Double -> e.putFloat(k, v.toFloat())
+                    is String -> e.putString(k, v)
+                    else -> continue
+                }
+                nSet++
+            }
         }
         e.apply()
 
-        val incoming = ArrayList<Skill>()
+        var nSkills = 0
+        val have = TaskStore.skills(ctx).map { it.name + "|" + it.goal }.toHashSet()
         val sa = root.optJSONArray("skills")
         if (sa != null) {
             for (i in 0 until sa.length()) {
                 val o = sa.optJSONObject(i) ?: continue
-                val steps = ArrayList<String>()
-                val arr = o.optJSONArray("steps")
-                if (arr != null) for (j in 0 until arr.length()) steps.add(arr.optString(j))
-                incoming.add(Skill(0, o.optString("name"), o.optString("goal"), steps))
+                val name = o.optString("name")
+                val goal = o.optString("goal")
+                if (name.isBlank() || (name + "|" + goal) in have) continue
+                TaskStore.saveSkill(ctx, name, goal, o.optString("steps"), o.optString("platform"), o.optString("notes"))
+                nSkills++
             }
         }
-        val nSkills = SkillStore.merge(c, incoming)
 
         var nChats = 0
         val ca = root.optJSONArray("chats")
         if (ca != null) {
-            val db = ChatDb.get(c)
             for (i in 0 until ca.length()) {
                 val o = ca.optJSONObject(i) ?: continue
-                val id = db.newConv(o.optString("title", "Imported chat"))
-                val ms = o.optJSONArray("messages")
-                if (ms != null) {
-                    for (j in 0 until ms.length()) {
-                        val m = ms.optJSONObject(j) ?: continue
-                        db.addMsg(id, m.optString("role", "user"), m.optString("text"))
-                    }
+                val id = ChatStore.newConv(ctx, o.optString("title", "Imported chat"))
+                val ms = o.optJSONArray("msgs") ?: continue
+                for (j in 0 until ms.length()) {
+                    val m = ms.optJSONObject(j) ?: continue
+                    ChatStore.add(
+                        ctx, id, m.optString("role", "user"), m.optString("text"),
+                        emptyList(), emptyList(), m.optString("model"), ""
+                    )
                 }
                 nChats++
             }
         }
-        return "Settings: $nSettings, Skills (naye): $nSkills, Chats: $nChats restore hue."
+        return "Restore ho gaya: $nSet settings, $nSkills skills, $nChats chats"
+    }
+
+    // ---------- passphrase crypto ----------
+
+    private fun keyFrom(pass: String, salt: ByteArray): SecretKeySpec {
+        val f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val k = f.generateSecret(PBEKeySpec(pass.toCharArray(), salt, 120_000, 256)).encoded
+        return SecretKeySpec(k, "AES")
+    }
+
+    private fun encrypt(plain: String, pass: String): String {
+        val r = SecureRandom()
+        val salt = ByteArray(16).also { r.nextBytes(it) }
+        val iv = ByteArray(12).also { r.nextBytes(it) }
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, keyFrom(pass, salt), GCMParameterSpec(128, iv))
+        val ct = c.doFinal(plain.toByteArray(Charsets.UTF_8))
+        return Base64.encodeToString(salt + iv + ct, Base64.NO_WRAP)
+    }
+
+    private fun decrypt(b64: String, pass: String): String {
+        val raw = Base64.decode(b64.trim(), Base64.NO_WRAP)
+        val salt = raw.copyOfRange(0, 16)
+        val iv = raw.copyOfRange(16, 28)
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE, keyFrom(pass, salt), GCMParameterSpec(128, iv))
+        return String(c.doFinal(raw, 28, raw.size - 28), Charsets.UTF_8)
     }
 }

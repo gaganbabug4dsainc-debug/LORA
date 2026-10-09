@@ -4,34 +4,44 @@ import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 
-/**
- * Ek LLM provider. type: gemini | openrouter | groq | custom | local.
- * local ke liye `key` = model file ka path (secret nahi), baaki ke liye API key.
- */
+/** Ek LLM provider (key + models). type: gemini | openrouter | groq | local | custom */
 data class Provider(
     val type: String,
     val key: String,
     val baseUrl: String,
     val models: List<String>
 ) {
-    val label: String
-        get() = if (type == "local") "local:${File(key).name}" else "$type ..${key.takeLast(4)}"
-}
+    /** local (Ollama server) ya device (phone ke andar chalne wala model): internet ki zarurat nahi. */
+    val isOffline: Boolean get() = type == "local" || type == "device"
 
-/** App ke har entry point (service, activity) se ek baar chalta hai. */
-object Boot {
-    fun init(c: Context) {
-        val app = c.applicationContext
-        TaskStore.init(app)
-        LocalLlm.appCtx = app
-        VoiceOut.appCtx = app
-    }
+    val label: String
+        get() = when {
+            type == "device" -> "device:" + key.substringAfterLast('/').take(24)
+            key.isEmpty() -> type
+            else -> "$type ..${key.takeLast(4)}"
+        }
 }
 
 object Config {
     const val KEY_BUBBLE = "bubble"
+    private const val KEY_PIN = "pin"
+    private const val KEY_MAX_STEPS = "max_steps"
+    private const val KEY_UNLIMITED = "unlimited"
+    private const val KEY_MANUAL = "manual_step"
+    private const val KEY_ACTIVE_CHAT = "active_chat"
+    private const val KEY_TTS = "tts"
+    private const val KEY_LANG = "voice_lang"
+    private const val KEY_MODE = "panel_mode"
+    private const val KEY_DATA = "data_mode"
+    private const val KEY_SPEAK = "speak_mode"
+    private const val KEY_RATE = "tts_rate"
+    private const val KEY_VOL = "tts_volume"
+    private const val KEY_VOICE = "tts_voice"
+    private const val KEY_AUTOCP = "auto_checkpoint"
+
+    val LANGS = listOf("hi-IN", "en-IN", "en-US")
+    val STEP_CHOICES = listOf(10, 20, 50, 100, 200)
 
     fun prefs(c: Context): SharedPreferences =
         c.getSharedPreferences("agent", Context.MODE_PRIVATE)
@@ -52,15 +62,11 @@ object Config {
     fun splitModels(s: String): List<String> =
         s.split(',').map { it.trim() }.filter { it.isNotEmpty() }
 
-    /**
-     * Providers (API keys) Keystore se encrypted JSON me rakhe jaate hain.
-     * Purana plain-text format mile to padhkar turant encrypted me badal diya jata hai.
-     */
     fun load(c: Context): List<Provider> {
         val p = prefs(c)
-        val stored = p.getString("providers", null)
-        if (stored == null) {
-            // Bahut purane version ki ek key/model ko migrate karo
+        val s = p.getString("providers", null)
+        if (s == null) {
+            // Purane version ki ek key/model ko migrate karo
             val key = p.getString("key", "")?.trim().orEmpty()
             if (key.isEmpty()) return emptyList()
             val type = detectType(key)
@@ -70,27 +76,22 @@ object Config {
             if (model.contains(' ')) model = "" // display name tha, slug nahi
             val list = listOf(Provider(type, key, base, splitModels(model)))
             save(c, list)
-            p.edit().remove("key").remove("model").apply()
             return list
         }
-        val json = Secure.decrypt(stored)
-        if (json.isEmpty()) return emptyList()
-        val out = try {
-            val arr = JSONArray(json)
-            val list = ArrayList<Provider>()
+        return try {
+            val arr = JSONArray(s)
+            val out = ArrayList<Provider>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val ms = o.optJSONArray("models")
                 val models = ArrayList<String>()
                 if (ms != null) for (j in 0 until ms.length()) models.add(ms.getString(j))
-                list.add(Provider(o.getString("type"), o.getString("key"), o.optString("baseUrl"), models))
+                out.add(Provider(o.getString("type"), SecureStore.dec(o.getString("key")), o.optString("baseUrl"), models))
             }
-            list
+            out
         } catch (e: Exception) {
-            return emptyList()
+            emptyList()
         }
-        if (!Secure.isEncrypted(stored)) save(c, out) // plain -> encrypted migration
-        return out
     }
 
     fun save(c: Context, list: List<Provider>) {
@@ -99,100 +100,124 @@ object Config {
             arr.put(
                 JSONObject()
                     .put("type", p.type)
-                    .put("key", p.key)
+                    .put("key", SecureStore.enc(p.key))
                     .put("baseUrl", p.baseUrl)
                     .put("models", JSONArray(p.models))
             )
         }
-        prefs(c).edit().putString("providers", Secure.encrypt(arr.toString())).apply()
+        prefs(c).edit().putString("providers", arr.toString()).apply()
     }
 
+    // ---------- floating icon ----------
     fun bubbleEnabled(c: Context): Boolean = prefs(c).getBoolean(KEY_BUBBLE, true)
 
     fun setBubble(c: Context, on: Boolean) {
         prefs(c).edit().putBoolean(KEY_BUBBLE, on).apply()
     }
 
-    // ---- Agent settings ----
+    // ---------- manual model switch (agent + chat dono) ----------
+    /** "type|keySuffix|model" ya null (= Auto). */
+    fun pin(c: Context): String? = prefs(c).getString(KEY_PIN, null)?.takeIf { it.isNotEmpty() }
 
-    /** 0 = Unlimited. Default 100 (15 ka purana hard limit hata diya). */
-    fun stepLimit(c: Context): Int = prefs(c).getInt("step_limit", 100)
-
-    fun setStepLimit(c: Context, v: Int) {
-        prefs(c).edit().putInt("step_limit", v).apply()
-    }
-
-    /** local_only | ask | allow. Default: ask (online bhejne se pehle poochho). */
-    fun dataMode(c: Context): String = prefs(c).getString("data_mode", "ask") ?: "ask"
-
-    fun setDataMode(c: Context, v: String) {
-        prefs(c).edit().putString("data_mode", v).apply()
-    }
-
-    /** Har N step par auto checkpoint. 0 = off. */
-    fun autoCheckpoint(c: Context): Int = prefs(c).getInt("auto_cp", 10)
-
-    fun setAutoCheckpoint(c: Context, v: Int) {
-        prefs(c).edit().putInt("auto_cp", v).apply()
-    }
-
-    /** true = har step ke baad pause (Next dabane par agla step). */
-    fun stepMode(c: Context): Boolean = prefs(c).getBoolean("step_mode", false)
-
-    fun setStepMode(c: Context, v: Boolean) {
-        prefs(c).edit().putBoolean("step_mode", v).apply()
-    }
-
-    /** User ne manually jo model chuna (Cand.id). null = auto. */
-    fun pinned(c: Context): String? = prefs(c).getString("pinned", null)
-
-    fun setPinned(c: Context, id: String?) {
+    fun setPin(c: Context, id: String?) {
         val e = prefs(c).edit()
-        if (id == null) e.remove("pinned") else e.putString("pinned", id)
+        if (id == null) e.remove(KEY_PIN) else e.putString(KEY_PIN, id)
+        e.apply()
+        AgentLoop.beforeModelSwitch(c) // checkpoint, phir naya model wahin se chalega
+        Pool.pinned = id // chalte agent/chat par turant lagu
+        AgentLoop.afterModelSwitch(c)
+    }
+
+    // ---------- step control ----------
+    fun maxSteps(c: Context): Int = prefs(c).getInt(KEY_MAX_STEPS, 50).coerceIn(1, 100000)
+
+    fun setMaxSteps(c: Context, n: Int) {
+        prefs(c).edit().putInt(KEY_MAX_STEPS, n.coerceIn(1, 100000)).apply()
+    }
+
+    fun unlimited(c: Context): Boolean = prefs(c).getBoolean(KEY_UNLIMITED, true)
+
+    fun setUnlimited(c: Context, on: Boolean) {
+        prefs(c).edit().putBoolean(KEY_UNLIMITED, on).apply()
+    }
+
+    fun manualStep(c: Context): Boolean = prefs(c).getBoolean(KEY_MANUAL, false)
+
+    fun setManualStep(c: Context, on: Boolean) {
+        prefs(c).edit().putBoolean(KEY_MANUAL, on).apply()
+    }
+
+    // ---------- chat / voice ----------
+    fun activeChat(c: Context): Long = prefs(c).getLong(KEY_ACTIVE_CHAT, 0L)
+
+    fun setActiveChat(c: Context, id: Long) {
+        prefs(c).edit().putLong(KEY_ACTIVE_CHAT, id).apply()
+    }
+
+    fun ttsOn(c: Context): Boolean = prefs(c).getBoolean(KEY_TTS, false)
+
+    fun setTts(c: Context, on: Boolean) {
+        prefs(c).edit().putBoolean(KEY_TTS, on).apply()
+    }
+
+    fun voiceLang(c: Context): String = prefs(c).getString(KEY_LANG, LANGS[0]) ?: LANGS[0]
+
+    fun setVoiceLang(c: Context, l: String) {
+        prefs(c).edit().putString(KEY_LANG, l).apply()
+    }
+
+    /** Floating panel ka mode: "agent" (phone chalao) ya "chat" (baat karo). */
+    fun panelMode(c: Context): String = prefs(c).getString(KEY_MODE, "agent") ?: "agent"
+
+    fun setPanelMode(c: Context, m: String) {
+        prefs(c).edit().putString(KEY_MODE, m).apply()
+    }
+
+    // ---------- data processing: "local" | "ask" | "allow" ----------
+    fun dataMode(c: Context): String = prefs(c).getString(KEY_DATA, "ask") ?: "ask"
+
+    fun setDataMode(c: Context, m: String) {
+        prefs(c).edit().putString(KEY_DATA, m).apply()
+    }
+
+    // ---------- speech: "silent" | "important" | "every" ----------
+    fun speakMode(c: Context): String = prefs(c).getString(KEY_SPEAK, "important") ?: "important"
+
+    fun setSpeakMode(c: Context, m: String) {
+        prefs(c).edit().putString(KEY_SPEAK, m).apply()
+    }
+
+    fun ttsRate(c: Context): Float = prefs(c).getFloat(KEY_RATE, 1.0f)
+
+    fun setTtsRate(c: Context, r: Float) {
+        prefs(c).edit().putFloat(KEY_RATE, r).apply()
+    }
+
+    fun ttsVolume(c: Context): Float = prefs(c).getFloat(KEY_VOL, 1.0f)
+
+    fun setTtsVolume(c: Context, v: Float) {
+        prefs(c).edit().putFloat(KEY_VOL, v).apply()
+    }
+
+    fun ttsVoice(c: Context): String? = prefs(c).getString(KEY_VOICE, null)?.takeIf { it.isNotEmpty() }
+
+    fun setTtsVoice(c: Context, v: String?) {
+        val e = prefs(c).edit()
+        if (v == null) e.remove(KEY_VOICE) else e.putString(KEY_VOICE, v)
         e.apply()
     }
 
-    // ---- Local model ----
+    // ---------- on-device model ----------
+    fun deviceCtx(c: Context): Int = prefs(c).getInt("device_ctx", 1280)
 
-    /** Local model ka total token window (input + output). Model file ke hisaab se rakho. */
-    fun localCtx(c: Context): Int = prefs(c).getInt("local_ctx", 1280)
-
-    fun setLocalCtx(c: Context, v: Int) {
-        prefs(c).edit().putInt("local_ctx", v).apply()
+    fun setDeviceCtx(c: Context, n: Int) {
+        prefs(c).edit().putInt("device_ctx", n.coerceIn(512, 8192)).apply()
     }
 
-    // ---- Voice ----
+    /** Har N step par auto checkpoint (0 = band). */
+    fun autoCheckpoint(c: Context): Int = prefs(c).getInt(KEY_AUTOCP, 10)
 
-    /** silent | important | every */
-    fun voiceMode(c: Context): String = prefs(c).getString("voice_mode", "important") ?: "important"
-
-    fun setVoiceMode(c: Context, v: String) {
-        prefs(c).edit().putString("voice_mode", v).apply()
-    }
-
-    // ---- Generic helpers (floating window geometry, voice settings...) ----
-
-    fun geti(c: Context, key: String, def: Int): Int = prefs(c).getInt(key, def)
-
-    fun puti(c: Context, key: String, v: Int) {
-        prefs(c).edit().putInt(key, v).apply()
-    }
-
-    fun getb(c: Context, key: String, def: Boolean): Boolean = prefs(c).getBoolean(key, def)
-
-    fun putb(c: Context, key: String, v: Boolean) {
-        prefs(c).edit().putBoolean(key, v).apply()
-    }
-
-    fun gets(c: Context, key: String, def: String): String = prefs(c).getString(key, def) ?: def
-
-    fun puts(c: Context, key: String, v: String) {
-        prefs(c).edit().putString(key, v).apply()
-    }
-
-    fun getf(c: Context, key: String, def: Float): Float = prefs(c).getFloat(key, def)
-
-    fun putf(c: Context, key: String, v: Float) {
-        prefs(c).edit().putFloat(key, v).apply()
+    fun setAutoCheckpoint(c: Context, n: Int) {
+        prefs(c).edit().putInt(KEY_AUTOCP, n.coerceAtLeast(0)).apply()
     }
 }

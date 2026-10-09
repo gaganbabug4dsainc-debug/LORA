@@ -3,586 +3,374 @@ package com.example.phoneagent
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
-import android.graphics.Typeface
 import android.os.Bundle
 import android.provider.Settings
-import android.text.InputType
+import android.text.format.DateUtils
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import kotlin.concurrent.thread
 
+/**
+ * Home: ek nazar me sab kuch. Upar status + controls, phir goal likhne ki jagah, setup checklist,
+ * quick tiles (Chat / Skill Studio / History / Doosre AI), recent tasks. Settings alag screen me.
+ */
 class MainActivity : Activity() {
 
     companion object {
-        /** Crash-recovery dialog process me ek hi baar dikhao. */
         private var recoveryShown = false
     }
 
+    private lateinit var root: LinearLayout
+    private lateinit var heroBox: LinearLayout
+    private lateinit var setupBox: LinearLayout
+    private lateinit var tasksBox: LinearLayout
+    private lateinit var statsView: TextView
     private lateinit var logView: TextView
-    private lateinit var dashStatus: TextView
-    private lateinit var dashGoal: TextView
-    private lateinit var pauseBtn: Button
-    private lateinit var chatInput: EditText
-    private lateinit var queueBox: LinearLayout
-    private lateinit var modelsBox: LinearLayout
-    private lateinit var providersBox: LinearLayout
-    private lateinit var settingsBox: LinearLayout
-    private var lastQueueSig = ""
+    private lateinit var goal: EditText
+    private lateinit var badgeView: TextView
 
     private val logListener: (String) -> Unit = { line ->
         runOnUiThread { logView.append(line + "\n") }
     }
-    private val stateListener: () -> Unit = {
-        runOnUiThread { refreshDash() }
-    }
+    private val stateListener: () -> Unit = { runOnUiThread { refreshHero() } }
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun dp(v: Int) = Ui.dp(this, v)
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
 
-    private fun heading(t: String) = TextView(this).apply {
-        text = t
-        textSize = 16f
-        typeface = Typeface.DEFAULT_BOLD
-        setPadding(0, dp(18), 0, dp(4))
-    }
-
-    private fun small(t: String) = TextView(this).apply {
-        text = t
-        textSize = 12f
-    }
-
-    private fun btn(t: String, onClick: () -> Unit) = Button(this).apply {
-        text = t
-        setAllCaps(false)
-        setOnClickListener { onClick() }
-    }
-
-    private fun btnRow(vararg bs: Button): LinearLayout {
-        val r = LinearLayout(this)
-        r.orientation = LinearLayout.HORIZONTAL
-        for (b in bs) {
-            r.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        }
-        return r
-    }
-
-    private fun radioGroup(options: List<String>, selected: Int, onPick: (Int) -> Unit): RadioGroup {
-        val g = RadioGroup(this)
-        g.orientation = RadioGroup.VERTICAL
-        for ((i, o) in options.withIndex()) {
-            val rb = RadioButton(this)
-            rb.id = View.generateViewId()
-            rb.text = o
-            g.addView(rb)
-            rb.setOnClickListener { onPick(i) }
-        }
-        (g.getChildAt(selected) as? RadioButton)?.isChecked = true
-        return g
-    }
-
-    private fun askText(
-        title: String,
-        initial: String,
-        onDismiss: (() -> Unit)? = null,
-        onOk: (String) -> Unit
-    ) {
-        val input = EditText(this)
-        input.setText(initial)
-        input.setSelection(initial.length)
-        val d = AlertDialog.Builder(this).setTitle(title).setView(input)
-            .setPositiveButton("OK") { _, _ ->
-                val t = input.text.toString().trim()
-                if (t.isNotEmpty()) onOk(t)
-            }
-            .setNegativeButton("Cancel", null)
-            .create()
-        if (onDismiss != null) d.setOnDismissListener { onDismiss() }
-        d.show()
+    private fun service(): AgentAccessibilityService? {
+        val s = AgentAccessibilityService.instance
+        if (s == null) toast("Pehle Accessibility me LoRA ko on karo")
+        return s
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Boot.init(this)
-        val pad = dp(16)
+        TaskStore.recoverOnStart(this)
+        Pool.refresh(this)
 
-        val page = LinearLayout(this)
-        page.orientation = LinearLayout.VERTICAL
-        page.setPadding(pad, pad * 2, pad, pad)
+        root = Ui.vbox(this)
+        root.setPadding(dp(16), dp(28), dp(16), dp(28))
 
-        val title = TextView(this).apply {
-            text = "Phone Agent v0.4"
-            textSize = 22f
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        page.addView(title)
-        val navRow = LinearLayout(this)
-        navRow.orientation = LinearLayout.HORIZONTAL
-        navRow.addView(btn("💬 Chat") { startActivity(android.content.Intent(this, ChatActivity::class.java)) },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        navRow.addView(btn("⚙️ Aur settings") { startActivity(android.content.Intent(this, MoreActivity::class.java)) },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        page.addView(navRow)
+        // ---- header ----
+        val head = Ui.hbox(this)
+        val titles = Ui.vbox(this)
+        titles.addView(Ui.title(this, "LoRA"))
+        titles.addView(Ui.text(this, "Phone Agent · v0.6", 12f, Ui.MUTED))
+        head.addView(titles, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        head.addView(Ui.button(this, "⚙", "tonal") {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }.apply { textSize = 18f })
+        root.addView(head)
 
-        // ---------------- Dashboard ----------------
-        page.addView(heading("AGENT"))
-        dashGoal = TextView(this).apply { textSize = 14f }
-        dashStatus = TextView(this).apply { textSize = 13f }
-        page.addView(dashGoal)
-        page.addView(dashStatus)
+        badgeView = Ui.pill(this, "", Ui.INFO_SOFT, Ui.BLUE)
+        root.addView(badgeView, Ui.lp(this, top = 8).also { it.width = ViewGroup.LayoutParams.WRAP_CONTENT })
 
-        pauseBtn = btn("⏸ Pause") { togglePause() }
-        page.addView(
-            btnRow(
-                pauseBtn,
-                btn("■ Stop") { AgentLoop.stop() },
-                btn("⏭ Skip") { AgentLoop.skip() },
-                btn("▷ Next") { AgentLoop.next() }
-            )
-        )
-        page.addView(
-            btnRow(
-                btn("↻ Retry") { AgentLoop.retry() },
-                btn("⚑ Checkpoint") { AgentLoop.manualCheckpoint() },
-                btn("⟲ Restart") { restartTask() }
-            )
-        )
-        page.addView(btn("1. Accessibility settings kholo") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        })
+        // ---- hero (agent status + controls) ----
+        heroBox = Ui.card(this, Ui.SURFACE, 16)
+        root.addView(heroBox, Ui.lp(this, top = 12))
 
-        // ---------------- Chat ----------------
-        page.addView(heading("Agent Chat / naya goal"))
-        page.addView(
-            small(
-                "Chal raha ho to ye message agent ko instruction hai. Ruka ho to naya goal. " +
-                    "Commands: stop, pause, continue, skip, next, retry, status, checkpoint, change goal."
-            )
-        )
-        chatInput = EditText(this).apply {
-            hint = "Likho ya command do (jaise: pause, status)"
+        // ---- composer ----
+        val comp = Ui.card(this)
+        comp.addView(Ui.text(this, "Agent ko kaam do", 15f, Ui.TEXT, true))
+        goal = EditText(this).apply {
+            hint = "Jaise: Clock app kholo aur 7 baje ka alarm lagao"
             minLines = 2
+            background = Ui.rounded(Ui.BG, dp(12))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            textSize = 14f
         }
-        page.addView(chatInput)
-        page.addView(btn("Bhejo / Start") {
-            val t = chatInput.text.toString().trim()
-            if (t.isEmpty()) {
-                toast("Kuch likho")
-            } else {
-                if (AgentAccessibilityService.instance == null && !AgentLoop.isRunning()) {
-                    toast("Pehle Accessibility me Phone Agent ko on karo")
-                } else {
-                    chatInput.setText("")
-                    AgentChat.handle(t)
-                }
-            }
-        })
+        comp.addView(goal, Ui.lp(this, top = 8))
+        val chipScroll = HorizontalScrollView(this)
+        chipScroll.isHorizontalScrollBarEnabled = false
+        val chips = Ui.hbox(this)
+        val templates = listOf(
+            "📱 App kholo" to "Settings app kholo",
+            "⏰ Alarm" to "Clock app kholo aur subah 7 baje ka alarm lagao",
+            "📶 Wi-Fi" to "Settings me jaakar Wi-Fi on karo",
+            "💬 Message" to "WhatsApp kholo aur ",
+            "🔎 Search" to "Chrome kholo aur search karo: "
+        )
+        for ((label, text) in templates) {
+            chips.addView(Ui.chip(this, label, Ui.PRIMARY_SOFT, Ui.PRIMARY, 12f) {
+                goal.setText(text)
+                goal.setSelection(text.length)
+            }, Ui.lp(this, right = 6).also { it.width = ViewGroup.LayoutParams.WRAP_CONTENT })
+        }
+        chipScroll.addView(chips)
+        comp.addView(chipScroll, Ui.lp(this, top = 8))
+        comp.addView(Ui.button(this, "▶  Agent start / message bhejo", "primary") { startAgent() }, Ui.lp(this, top = 10))
+        root.addView(comp, Ui.lp(this, top = 12))
 
-        // ---------------- Steps queue ----------------
-        page.addView(heading("Steps (user ke add kiye hue)"))
-        page.addView(small("Agent inhe order me karta hai. Item par tap karke Edit/Delete/Move/Checkpoint wagaira."))
-        queueBox = LinearLayout(this)
-        queueBox.orientation = LinearLayout.VERTICAL
-        page.addView(queueBox)
-        val stepInput = EditText(this).apply { hint = "Naya step, jaise: screenshot lo" }
-        page.addView(stepInput)
-        page.addView(
-            btnRow(
-                btn("+ Agla step") { addQueueStep(stepInput, true) },
-                btn("+ Aakhir me") { addQueueStep(stepInput, false) }
-            )
+        // ---- setup checklist ----
+        setupBox = Ui.vbox(this)
+        root.addView(setupBox, Ui.lp(this, top = 12))
+
+        // ---- quick tiles ----
+        root.addView(Ui.section(this, "SHORTCUTS"))
+        val t1 = Ui.row(
+            this,
+            Ui.tile(this, "💬", "Chat", "Offline history") { startActivity(Intent(this, ChatActivity::class.java)) },
+            Ui.tile(this, "🧩", "Skill Studio", "Skills banao") { startActivity(Intent(this, SkillsActivity::class.java)) },
+            gap = 10
+        )
+        val t2 = Ui.row(
+            this,
+            Ui.tile(this, "🕘", "History", "Purane tasks") { startActivity(Intent(this, HistoryActivity::class.java)) },
+            Ui.tile(this, "🤖", "Doosre AI", "ChatGPT, Gemini...") { Platforms.askDialog(this) },
+            gap = 10
+        )
+        root.addView(t1)
+        root.addView(t2, Ui.lp(this, top = 10))
+        root.addView(
+            Ui.button(this, "🧠 Model badlo  (${ModelPicker.shortLabel(this)})", "outline") {
+                ModelPicker.show(this, false) { runOnUiThread { refreshAll() } }
+            }.also { it.tag = "modelBtn" },
+            Ui.lp(this, top = 10)
         )
 
-        // ---------------- Models ----------------
-        page.addView(heading("Models"))
-        page.addView(
-            small("Model badalne se task reset nahi hota; naya model wahin se continue karta hai. Local model 'Aur settings' se jodo.")
-        )
-        modelsBox = LinearLayout(this)
-        modelsBox.orientation = LinearLayout.VERTICAL
-        page.addView(modelsBox)
-        page.addView(btn("Models refresh") { renderModels() })
+        // ---- recent tasks ----
+        root.addView(Ui.section(this, "HAAL KE TASKS"))
+        statsView = Ui.text(this, "", 12f, Ui.MUTED)
+        root.addView(statsView)
+        tasksBox = Ui.vbox(this)
+        root.addView(tasksBox, Ui.lp(this, top = 6))
 
-        // ---------------- Providers ----------------
-        page.addView(heading("Providers (API keys)"))
-        page.addView(small("Upar wala pehle chalta hai; limit/error aaye to agla apne aap."))
-        providersBox = LinearLayout(this)
-        providersBox.orientation = LinearLayout.VERTICAL
-        page.addView(providersBox)
+        // ---- log ----
+        logView = Ui.text(this, "", 12f, Ui.TEXT)
+        root.addView(Ui.collapsible(this, "📜", "Live log", "Agent kya kar raha hai", logView), Ui.lp(this, top = 16))
 
-        val keyField = EditText(this).apply {
-            hint = "API key (Gemini AIza... / OpenRouter sk-or-... / Groq gsk_... / custom)"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        val modelsField = EditText(this).apply {
-            hint = "Model(s), comma se. Khali = auto (Gemini/OpenRouter)"
-        }
-        val baseField = EditText(this).apply { hint = "Base URL (sirf custom provider ke liye)" }
-        page.addView(keyField)
-        page.addView(modelsField)
-        page.addView(baseField)
-        page.addView(btn("+ Provider jodo") {
-            val key = keyField.text.toString().trim()
-            if (key.isEmpty()) {
-                toast("API key daalo")
-            } else {
-                val type = Config.detectType(key)
-                val base = if (type == "custom") baseField.text.toString().trim() else Config.presetBase(type)
-                val models = Config.splitModels(modelsField.text.toString())
-                if (type == "custom" && base.isEmpty()) {
-                    toast("Is key ke liye Base URL chahiye")
-                } else if ((type == "groq" || type == "custom") && models.isEmpty()) {
-                    toast("Is provider ke liye model ka naam do")
-                } else if (models.any { it.contains(' ') }) {
-                    toast("Model ka slug likho (jaise vendor/model-name), display name nahi")
-                } else {
-                    val list = Config.load(this).filter { it.key != key } + Provider(type, key, base, models)
-                    Config.save(this, list)
-                    keyField.setText("")
-                    modelsField.setText("")
-                    baseField.setText("")
-                    renderProviders()
-                    renderModels()
-                    toast("Jod diya: $type")
-                }
-            }
-        })
-
-        // ---------------- Settings ----------------
-        page.addView(heading("Settings"))
-        settingsBox = LinearLayout(this)
-        settingsBox.orientation = LinearLayout.VERTICAL
-        page.addView(settingsBox)
-
-        val stepSwitch = Switch(this).apply {
-            text = "Step-by-step mode (har step ke baad pause)"
-            isChecked = Config.stepMode(this@MainActivity)
-            setOnCheckedChangeListener { _, on -> Config.setStepMode(this@MainActivity, on) }
-        }
-        val bubbleSwitch = Switch(this).apply {
-            text = "Floating icon dikhao"
-            isChecked = Config.bubbleEnabled(this@MainActivity)
-            setOnCheckedChangeListener { _, on -> Config.setBubble(this@MainActivity, on) }
-        }
-        page.addView(stepSwitch)
-        page.addView(bubbleSwitch)
-
-        // ---------------- Log ----------------
-        page.addView(heading("Log"))
-        logView = TextView(this).apply { textSize = 13f }
-        page.addView(logView)
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(
-                    page,
-                    ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    )
-                )
-            }
-        )
-        renderProviders()
-        renderSettings()
-        renderModels()
+        val sv = ScrollView(this)
+        sv.setBackgroundColor(Ui.BG)
+        sv.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        setContentView(sv)
     }
 
-    // ------------------------------------------------------------------
+    // ---------------- actions ----------------
 
-    private fun togglePause() {
-        when {
-            !AgentLoop.isRunning() -> AgentLoop.resume()
-            AgentLoop.isPaused() -> AgentLoop.resume()
-            else -> AgentLoop.pause()
-        }
-    }
-
-    private fun restartTask() {
-        val svc = AgentAccessibilityService.instance
-        if (svc == null) {
-            toast("Pehle Accessibility me Phone Agent ko on karo")
-        } else {
-            AgentLoop.restart(svc)
-        }
-    }
-
-    private fun refreshDash() {
-        val st = TaskStore.current
-        val model = if (AgentState.model.isEmpty()) "auto" else AgentState.model
-        val cp = if (AgentState.checkpoint.isEmpty()) "-" else AgentState.checkpoint
-        dashGoal.text = "Task: ${st?.goal ?: "(koi nahi)"}"
-        dashStatus.text = "${AgentState.statusLabel()} · ${AgentState.stepText()}\n" +
-            "${AgentState.modeLabel()} · Model: $model\n" +
-            "Checkpoint: $cp\n${AgentState.detail}"
-        pauseBtn.text = if (AgentLoop.isRunning() && !AgentLoop.isPaused()) "⏸ Pause" else "▶ Resume"
-        renderQueue(false)
-    }
-
-    // ---- steps queue ----
-
-    private fun addQueueStep(field: EditText, front: Boolean) {
-        val t = field.text.toString().trim()
-        if (t.isEmpty()) {
-            toast("Step likho")
+    private fun startAgent() {
+        val svc = service() ?: return
+        val g = goal.text.toString().trim()
+        if (g.isEmpty()) {
+            toast("Goal likho")
             return
         }
-        if (TaskStore.current == null) {
-            toast("Pehle koi task chalao, phir step add karo")
+        if (Config.load(this).isEmpty()) {
+            toast("Pehle Settings me provider ya local model jodo")
             return
         }
-        AgentLoop.addStep(t, front)
-        field.setText("")
-        renderQueue(true)
+        AgentLoop.submit(svc, g)
+        goal.setText("")
     }
 
-    private fun renderQueue(force: Boolean) {
-        val st = TaskStore.current
-        val items: List<QueuedStep> = if (st == null) emptyList() else TaskStore.queueSnapshot(st)
-        val sig = items.joinToString("|") { "${it.id}:${it.text}:${it.enabled}:${it.checkpoint}" }
-        if (!force && sig == lastQueueSig) return
-        lastQueueSig = sig
-        queueBox.removeAllViews()
-        if (items.isEmpty()) {
-            queueBox.addView(small("(queue khali)"))
-            return
-        }
-        for ((i, q) in items.withIndex()) {
-            val prefix = when {
-                q.checkpoint -> "⚑ "
-                !q.enabled -> "⊘ "
-                else -> "${i + 1}. "
-            }
-            val b = btn(prefix + q.text) { queueItemMenu(q) }
-            b.gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
-            queueBox.addView(b)
-        }
-    }
-
-    private fun queueItemMenu(q: QueuedStep) {
-        val st = TaskStore.current ?: return
-        val opts = arrayOf(
-            "Edit", "Delete", "Move Up", "Move Down", "Duplicate",
-            "Convert to Checkpoint", if (q.enabled) "Disable" else "Enable"
-        )
-        AlertDialog.Builder(this).setTitle(q.text.take(40)).setItems(opts) { _, which ->
-            when (which) {
-                0 -> askText("Step edit karo", q.text) {
-                    TaskStore.editStep(st, q.id, it)
-                    renderQueue(true)
-                }
-                1 -> TaskStore.deleteStep(st, q.id)
-                2 -> TaskStore.moveStep(st, q.id, -1)
-                3 -> TaskStore.moveStep(st, q.id, 1)
-                4 -> TaskStore.duplicateStep(st, q.id)
-                5 -> TaskStore.toCheckpoint(st, q.id)
-                6 -> TaskStore.toggleStep(st, q.id)
-            }
-            renderQueue(true)
-        }.setNegativeButton("Cancel", null).show()
-    }
-
-    // ---- models ----
-
-    private fun renderModels() {
-        thread(name = "models-ui") {
-            val providers = Config.load(this)
-            val cands: List<Cand> = if (providers.isEmpty()) {
-                emptyList()
-            } else {
-                Pool.set(providers)
-                Pool.candidates()
-            }
-            runOnUiThread {
-                modelsBox.removeAllViews()
-                if (cands.isEmpty()) {
-                    modelsBox.addView(small("(koi model nahi — pehle provider jodo)"))
-                    return@runOnUiThread
-                }
-                val cur = Config.pinned(this)
-                modelsBox.addView(modelRow("Auto (pehla available chalega)", "", cur == null) {
-                    switchModel(null)
-                })
-                for (c in cands) {
-                    val caps = c.caps()
-                    modelsBox.addView(modelRow(c.label, caps, c.id == cur) { switchModel(c) })
-                }
-            }
-        }
-    }
-
-    private fun modelRow(name: String, caps: String, current: Boolean, onUse: () -> Unit): LinearLayout {
-        val r = LinearLayout(this)
-        r.orientation = LinearLayout.HORIZONTAL
-        val info = TextView(this).apply {
-            text = (if (current) "● " else "○ ") + name + (if (caps.isEmpty()) "" else "\n    $caps")
-            textSize = 13f
-        }
-        r.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        if (!current) r.addView(btn("Use") { onUse() })
-        return r
-    }
-
-    private fun switchModel(c: Cand?) {
+    private fun resumeAgent() {
         if (AgentLoop.isRunning()) {
-            val step = (TaskStore.current?.step ?: 0) + 1
-            AlertDialog.Builder(this)
-                .setTitle("Model badlein?")
-                .setMessage("Model badalne se task state same rahega. Naya model Step $step se continue karega.")
-                .setPositiveButton("Switch") { _, _ ->
-                    AgentLoop.applyModelSwitch(this, c)
-                    renderModels()
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-        } else {
-            AgentLoop.applyModelSwitch(this, c)
-            renderModels()
-        }
-    }
-
-    // ---- providers ----
-
-    private fun renderProviders() {
-        providersBox.removeAllViews()
-        val list = Config.load(this)
-        if (list.isEmpty()) {
-            providersBox.addView(small("(abhi koi provider nahi)"))
+            AgentLoop.setPaused(false)
             return
         }
-        for ((i, p) in list.withIndex()) {
-            val row = LinearLayout(this)
-            row.orientation = LinearLayout.HORIZONTAL
-            val models = if (p.models.isEmpty()) "auto" else p.models.joinToString(", ")
-            val info = TextView(this).apply {
-                text = "${i + 1}. ${p.type}  ..${p.key.takeLast(4)}\n    $models"
-                textSize = 13f
-            }
-            val up = btn("↑") {
-                if (i > 0) {
-                    val m = list.toMutableList()
-                    val t = m[i]
-                    m[i] = m[i - 1]
-                    m[i - 1] = t
-                    Config.save(this, m)
-                    renderProviders()
-                    renderModels()
-                }
-            }
-            val del = btn("Hatao") {
-                Config.save(this, list.filterIndexed { idx, _ -> idx != i })
-                renderProviders()
-                renderModels()
-            }
-            row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            row.addView(up)
-            row.addView(del)
-            providersBox.addView(row)
-        }
+        val svc = service() ?: return
+        val tk = TaskStore.unfinished(this)
+        if (tk == null) toast("Koi adhura task nahi") else AgentLoop.resumeTask(svc, tk.id, null)
     }
 
-    // ---- settings ----
-
-    private fun renderSettings() {
-        settingsBox.removeAllViews()
-
-        // Agent Step Limit
-        settingsBox.addView(TextView(this).apply {
-            text = "Agent Step Limit"
-            typeface = Typeface.DEFAULT_BOLD
-        })
-        val limits = listOf(10, 20, 50, 100, 200, 0)
-        val cur = Config.stepLimit(this)
-        val opts = ArrayList<String>()
-        for (l in limits) opts.add(if (l == 0) "♾ Unlimited" else "$l steps")
-        opts.add(if (cur in limits) "Custom…" else "Custom ($cur)")
-        val sel = if (cur in limits) limits.indexOf(cur) else limits.size
-        settingsBox.addView(radioGroup(opts, sel) { i ->
-            if (i < limits.size) {
-                Config.setStepLimit(this, limits[i])
-                renderSettings()
-            } else {
-                askText("Custom step limit (number)", cur.toString(), { renderSettings() }) {
-                    val n = it.toIntOrNull()
-                    if (n != null && n > 0) Config.setStepLimit(this, n) else toast("Sahi number likho")
-                }
-            }
-        })
-        settingsBox.addView(small("Unlimited me bhi infinite-loop protection chalti hai."))
-
-        // Data processing
-        settingsBox.addView(TextView(this).apply {
-            text = "Data Processing"
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dp(12), 0, 0)
-        })
-        val modes = listOf("local_only", "ask", "allow")
-        val modeLabels = listOf(
-            "Local Only (kuch online nahi bhejna)",
-            "Ask Before Online Processing (default)",
-            "Allow Online Processing"
-        )
-        settingsBox.addView(radioGroup(modeLabels, modes.indexOf(Config.dataMode(this)).coerceAtLeast(0)) { i ->
-            Config.setDataMode(this, modes[i])
-        })
-        settingsBox.addView(small("'Local Only' me sirf jode hue local (offline) model chalenge; local model 'Aur settings' se jodo."))
-
-        // Auto checkpoint
-        settingsBox.addView(TextView(this).apply {
-            text = "Auto checkpoint"
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dp(12), 0, 0)
-        })
-        val cps = listOf(0, 5, 10, 20)
-        val cpLabels = listOf("Off", "Har 5 steps", "Har 10 steps", "Har 20 steps")
-        settingsBox.addView(radioGroup(cpLabels, cps.indexOf(Config.autoCheckpoint(this)).coerceAtLeast(0)) { i ->
-            Config.setAutoCheckpoint(this, cps[i])
-        })
-        settingsBox.addView(small("Risky action se pehle, pause/stop par aur model switch par checkpoint hamesha banta hai."))
-    }
-
-    // ---- crash recovery ----
-
-    private fun showRecovery(st: TaskData) {
+    private fun checkRecovery() {
+        if (recoveryShown) return
+        recoveryShown = true
+        val t = TaskStore.interrupted(this) ?: return
         AlertDialog.Builder(this)
-            .setTitle("Adhoora Agent task mila")
-            .setMessage("Goal: ${st.goal}\nStep ${st.step} tak ho chuka hai (${st.status}).")
+            .setTitle("Adhura Agent task mila")
+            .setMessage("Task #${t.id}: ${t.goal.take(80)}\nStep ${t.step} tak ho chuka tha.")
             .setPositiveButton("Continue") { _, _ ->
-                val svc = AgentAccessibilityService.instance
-                if (svc == null) toast("Pehle Accessibility me Phone Agent ko on karo")
-                else AgentLoop.resumeSaved(svc)
+                val svc = service() ?: return@setPositiveButton
+                AgentLoop.resumeTask(svc, t.id, null)
             }
-            .setNeutralButton("Restart") { _, _ -> restartTask() }
+            .setNeutralButton("Restart") { _, _ ->
+                val svc = service() ?: return@setNeutralButton
+                TaskStore.reset(this, t.id)
+                AgentLoop.resumeTask(svc, t.id, null)
+            }
             .setNegativeButton("Delete") { _, _ ->
-                TaskStore.clear()
-                refreshDash()
+                TaskStore.discard(this, t.id)
+                refreshTasks()
             }
             .show()
     }
 
+    // ---------------- refresh ----------------
+
+    private fun refreshAll() {
+        refreshBadge()
+        refreshHero()
+        refreshSetup()
+        refreshTasks()
+        (root.findViewWithTag<View>("modelBtn") as? TextView)?.text = "🧠 Model badlo  (${ModelPicker.shortLabel(this)})"
+    }
+
+    private fun refreshBadge() {
+        val label = Privacy.activeLabel(this)
+        val offline = label.startsWith("🟢")
+        Ui.restyle(
+            badgeView, label + "  ·  " + ModelPicker.shortLabel(this),
+            if (offline) Ui.OK_SOFT else if (label.startsWith("⚠")) Ui.WARN_SOFT else Ui.INFO_SOFT,
+            if (offline) Ui.OK else if (label.startsWith("⚠")) Ui.WARN else Ui.BLUE
+        )
+    }
+
+    private fun refreshHero() {
+        heroBox.removeAllViews()
+        val running = AgentLoop.isRunning()
+        val tk = if (AgentLoop.taskId > 0) TaskStore.get(this, AgentLoop.taskId)
+        else TaskStore.unfinished(this) ?: TaskStore.latest(this)
+        val (stateText, bg, fg) = when (AgentState.status) {
+            Status.IDLE -> Triple("⚪ Idle", Ui.LINE, Ui.MUTED)
+            Status.RUNNING -> Triple("🟢 Running", Ui.OK_SOFT, Ui.OK)
+            Status.WAITING -> Triple("🟡 Waiting", Ui.WARN_SOFT, Ui.WARN)
+            Status.PAUSED -> Triple("🔵 Paused", Ui.INFO_SOFT, Ui.BLUE)
+            Status.ERROR -> Triple("🔴 Error", Ui.ERR_SOFT, Ui.ERR)
+        }
+        val step = if (running) AgentLoop.step else (tk?.step ?: 0)
+        val total = AgentLoop.totalLabel(this)
+
+        val top = Ui.hbox(this)
+        top.addView(Ui.pill(this, stateText, bg, fg))
+        top.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        top.addView(Ui.text(this, "Step $step / $total", 12.5f, Ui.MUTED, true))
+        heroBox.addView(top)
+
+        heroBox.addView(
+            Ui.text(this, tk?.goal?.take(90) ?: "Abhi koi task nahi — neeche goal likho", 16f, Ui.TEXT, true),
+            Ui.lp(this, top = 10)
+        )
+        val frac = if (total == "∞") (if (step > 0) 0.15f else 0f) else (step.toFloat() / (total.toIntOrNull() ?: 1).coerceAtLeast(1))
+        heroBox.addView(Ui.bar(this, frac, fg.takeIf { it != Ui.MUTED } ?: Ui.PRIMARY), Ui.lp(this, top = 10))
+        heroBox.addView(Ui.text(this, AgentState.detail, 13f, Ui.MUTED), Ui.lp(this, top = 8))
+        if (tk != null) {
+            heroBox.addView(
+                Ui.text(this, "⚑ Checkpoint: Step ${tk.checkpoint}  ·  ${tk.status}", 11.5f, Ui.MUTED),
+                Ui.lp(this, top = 2)
+            )
+        }
+
+        val paused = AgentLoop.paused
+        val r1 = Ui.row(
+            this,
+            if (running && !paused) Ui.button(this, "⏸ Pause", "tonal") { AgentLoop.setPaused(true) }
+            else Ui.button(this, "▶ Resume", "primary") { resumeAgent() },
+            Ui.button(this, "Skip", "tonal") { AgentLoop.skip() },
+            Ui.button(this, "Next", "tonal") { AgentLoop.next() },
+            Ui.button(this, "■ Stop", "danger") { AgentLoop.stop() }
+        )
+        val r2 = Ui.row(
+            this,
+            Ui.button(this, "↻ Retry", "outline") { if (running) AgentLoop.retry() else toast("Agent chal nahi raha") },
+            Ui.button(this, "⟲ Restart", "outline") {
+                val svc = service() ?: return@button
+                AlertDialog.Builder(this).setTitle("Restart?")
+                    .setMessage("Task Step 1 se dobara shuru hoga.")
+                    .setPositiveButton("Restart") { _, _ -> AgentLoop.restart(svc) }
+                    .setNegativeButton("Cancel", null).show()
+            },
+            Ui.button(this, "✎ Steps", "outline") { service()?.showStepsEditor() },
+            Ui.button(this, "⚑", "outline") {
+                if (running) AgentLoop.checkpointNow(this, "manual") else toast("Agent chal nahi raha")
+            }
+        )
+        heroBox.addView(r1, Ui.lp(this, top = 12))
+        heroBox.addView(r2, Ui.lp(this, top = 8))
+    }
+
+    private fun refreshSetup() {
+        setupBox.removeAllViews()
+        val accOn = AgentAccessibilityService.instance != null
+        val hasModel = Config.load(this).isNotEmpty()
+        if (accOn && hasModel) {
+            setupBox.addView(Ui.pill(this, "✓ Setup poora: Accessibility on, model jodha hua", Ui.OK_SOFT, Ui.OK))
+            return
+        }
+        val card = Ui.card(this, Ui.WARN_SOFT)
+        card.addView(Ui.text(this, "Setup baaki hai", 15f, Ui.WARN, true))
+        if (!accOn) {
+            card.addView(
+                Ui.text(this, "1. Accessibility me LoRA on karo (Android 13+: App info → ⋮ → Allow restricted settings).", 13f, Ui.TEXT),
+                Ui.lp(this, top = 6)
+            )
+            card.addView(Ui.button(this, "Accessibility settings kholo", "primary") {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }, Ui.lp(this, top = 8))
+        }
+        if (!hasModel) {
+            card.addView(
+                Ui.text(this, (if (accOn) "1" else "2") + ". Koi model jodo: cloud API key ya phone ke andar ka model.", 13f, Ui.TEXT),
+                Ui.lp(this, top = 8)
+            )
+            card.addView(Ui.button(this, "Settings kholo", "tonal") {
+                startActivity(Intent(this, SettingsActivity::class.java))
+            }, Ui.lp(this, top = 8))
+        }
+        setupBox.addView(card)
+    }
+
+    private fun refreshTasks() {
+        tasksBox.removeAllViews()
+        val all = TaskStore.recent(this, 200)
+        val done = all.count { it.status == "completed" }
+        statsView.text = "${all.size} task · $done poore · ${all.sumOf { it.step }} total step"
+        val list = all.take(4)
+        if (list.isEmpty()) {
+            tasksBox.addView(Ui.note(this, "(abhi koi task nahi)"))
+            return
+        }
+        for (t in list) {
+            val c = Ui.card(this, Ui.SURFACE, 12)
+            val top = Ui.hbox(this)
+            top.addView(
+                Ui.text(this, t.goal.take(48), 14f, Ui.TEXT, true),
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            val ok = t.status == "completed"
+            top.addView(Ui.pill(this, t.status, if (ok) Ui.OK_SOFT else Ui.LINE, if (ok) Ui.OK else Ui.MUTED))
+            c.addView(top)
+            c.addView(
+                Ui.text(
+                    this,
+                    "Step ${t.step} · " + DateUtils.getRelativeTimeSpanString(t.updated, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS),
+                    12f, Ui.MUTED
+                )
+            )
+            val acts = Ui.hbox(this)
+            if (!ok) acts.addView(Ui.chip(this, "▶ Resume", Ui.PRIMARY, android.graphics.Color.WHITE, 12f) {
+                val svc = service() ?: return@chip
+                AgentLoop.resumeTask(svc, t.id, null)
+            }, Ui.lp(this, right = 6).also { it.width = ViewGroup.LayoutParams.WRAP_CONTENT })
+            acts.addView(Ui.chip(this, "Kholo", Ui.PRIMARY_SOFT, Ui.PRIMARY, 12f) {
+                startActivity(Intent(this, HistoryActivity::class.java))
+            }, Ui.lp(this, right = 6).also { it.width = ViewGroup.LayoutParams.WRAP_CONTENT })
+            acts.addView(Ui.chip(this, "Hatao", Ui.ERR_SOFT, Ui.ERR, 12f) {
+                TaskStore.discard(this, t.id)
+                refreshTasks()
+            })
+            c.addView(acts, Ui.lp(this, top = 8))
+            tasksBox.addView(c, Ui.lp(this, bottom = 8))
+        }
+        if (all.size > list.size) {
+            tasksBox.addView(Ui.button(this, "Saare tasks dekho (${all.size})", "tonal") {
+                startActivity(Intent(this, HistoryActivity::class.java))
+            })
+        }
+    }
+
     override fun onResume() {
         super.onResume()
-        TaskStore.init(this)
-        renderProviders()
+        Pool.refresh(this)
+        refreshAll()
         logView.text = AgentLog.lines.joinToString("\n")
         AgentLog.addListener(logListener)
         AgentState.addListener(stateListener)
-        refreshDash()
-        if (!recoveryShown && !AgentLoop.isRunning()) {
-            val st = TaskStore.unfinished()
-            if (st != null) {
-                recoveryShown = true
-                showRecovery(st)
-            }
-        }
+        checkRecovery()
     }
 
     override fun onPause() {
